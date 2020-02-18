@@ -1,0 +1,264 @@
+---
+title: "Webscraping NEU Student Housing"
+author: "Hiu Ching Law, Megha Rao"
+date: "March 15, 2019"
+output: pdf_document
+---
+
+# Import Libraries
+```{r, include=TRUE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# gather all library inclusion here
+library(rvest)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+```
+
+# Helper function(s)
+```{r}
+sumfun<-function(x,start,end){
+  return(sum(x[start:end]))
+}
+```
+
+# Reading the page
+```{r}
+neu_page <- paste0('https://www.apartmentfinder.com/Off-Campus-Housing/Massachusetts/Apartments-Near-Northeastern-University-nxm0t5q/Page', 1:30)
+
+# initializing a list for all the Northeastern variables to be put into the dataframe neu_housing
+neu_name <- vector("list", 30)
+neu_apartment_style <- vector("list", 30)
+neu_price <- vector("list", 30)
+neu_address <- vector("list", 30)
+neu_contact_phone <- vector("list", 30)
+neu_rating <- vector("list", 30)
+
+# webscraping Neu data
+for(i in seq_along(neu_page)){
+  
+  neu_name[[i]] <- read_html(neu_page[i]) %>% html_nodes(".listingTitle span") %>% html_text()
+  neu_apartment_style[[i]] <- read_html(neu_page[i]) %>% html_nodes('.unitLabel') %>% html_text()
+  neu_price[[i]] <- read_html(neu_page[i]) %>% html_nodes('.altRentDisplay') %>% html_text()
+  neu_address[[i]] <- read_html(neu_page[i]) %>% html_nodes('.location span') %>% html_text()
+  neu_contact_phone[[i]] <- read_html(neu_page[i]) %>% html_nodes('.phone') %>% html_text
+  #neu_amenities <- neu_page %>% html_nodes('ul.amenities.row') %>% html_attrs()
+  neu_rating[[i]] <- read_html(neu_page[i]) %>% html_nodes('li.iconStar') %>% html_attrs() %>% map(str_match, 'notFilled$') %>% unlist()
+  
+  # cleaning apartment style data
+  neu_apartment_style[[i]] <- neu_apartment_style[[i]] %>%
+    str_replace_all("^\\s+|\\s+$", "") %>%
+    str_replace_all("\r\n", "")
+
+  # cleaning the price data
+  neu_price[[i]] <- neu_price[[i]] %>%
+    str_replace_all("^\\s+|\\s+$", "") %>%
+    str_replace_all("^\\s+|\\s+$", "")
+}
+
+  # getting the entire address, and cleaning
+  # remove "MA " from column state for Northastern address
+  neu_address <- neu_address %>% unlist()
+  seq_needed <- seq(from = 1, to = length(neu_address), by = 5)
+  neu_address <- neu_address[seq_needed] %>%
+    str_replace_all("\r\n                        ", "") %>%
+    str_replace_all("\r\n                    ", "") %>%
+    str_replace_all("MA", "")
+  
+  # retrieving and cleaning rating data - NEU
+  neu_rating <- neu_rating %>% unlist()
+  neu_rating <- as.vector(neu_rating <- sapply(neu_rating, str_count, "notFilled"))
+  neu_rating[is.na(neu_rating)] <- 0
+  
+  k <- 1
+  l <- 5
+  temp <- vector("list", 30)
+  for (j in seq(from=1, to=750, by=1)) {
+    temp[j] <- sumfun(neu_rating, k, l)
+    k <- k + 5
+    l <- l + 5
+  }
+  
+  # unlisting columns to be placed into dataframe
+  neu_rating <- temp %>% unlist()
+  neu_name <- neu_name %>% unlist()
+  neu_apartment_style <- neu_apartment_style %>% unlist()
+  neu_price <- as.vector(neu_price %>% unlist())
+  neu_contact_phone <- neu_contact_phone %>% unlist()
+
+  # creating a dataframe for neu_housing table
+  neu_housing <- data.frame(
+    neu_name,
+    neu_apartment_style,
+    neu_price,
+    neu_address,
+    #neu_contact_phone, # we got rid of this because we felt like this column isn't really significant to what we want to analyse
+    #neu_amenities, # we are still trying to webscrape this piece of data, but pictures are really hard to webscrape
+    neu_rating,
+    stringsAsFactors=FALSE
+  )
+  
+###
+### after creating the dataframe
+###
+
+# separating the entire address into 3 columns
+neu_housing <- neu_housing %>% separate(neu_address, into = c("street_address", "city", "zipcode"), sep = ",")
+
+# separating the price into min and max
+neu_housing <- neu_housing %>% separate(neu_price, into = c("min_price", "max_price"), sep = " - ")
+
+# replace "Call for Rent" with NA
+neu_housing <- neu_housing %>% mutate(min_price = "is.na<-"(min_price, min_price == 'Call for Rent'))
+
+# replace ratings of 0 with NA
+neu_housing[neu_housing == 0] <- NA
+
+# remove $ sign and turn min_price and max_price to numerics
+neu_housing$min_price <- substring(neu_housing$min_price, 2)
+neu_housing$max_price <- substring(neu_housing$max_price, 2)
+neu_housing$min_price <- (na_if(neu_housing$min_price, "all for Rent   "))
+neu_housing$min_price <- as.numeric(gsub(",", "", neu_housing$min_price))
+neu_housing$max_price <- as.numeric(gsub(",", "", neu_housing$max_price))
+
+# adding avg_price
+neu_housing$avg_price <- (neu_housing$min_price + neu_housing$max_price) / 2
+
+# if there is no max_price but min_price, copy over min_price to avg_price
+neu_housing$max_price <- ifelse(is.na(neu_housing$max_price), neu_housing$min_price, neu_housing$max_price)
+neu_housing$avg_price <- ifelse(is.na(neu_housing$avg_price), neu_housing$min_price, neu_housing$avg_price)
+
+# adding avg_price after modifying max_price
+neu_housing$avg_price <- (neu_housing$min_price + neu_housing$max_price) / 2
+
+neu_housing
+
+# END NEU webscraping
+```
+
+
+
+# Creating Plots
+
+# Boxplot: Zip code vs Lowest Price
+```{r}
+#NEU
+gNEU1 <- ggplot(data = neu_housing, mapping = aes(x=zipcode, y=min_price)) +
+  geom_boxplot() +
+  coord_flip()
+gNEU1
+
+```
+Disregarding the outliers(the dots on the graph), it can be concluded that the area with zipcode 02446(Brookline) has the largest range of minimum price of apartments, followed by areas with zipcode 02445(Brookline), 02120(Boston), 02115(Boston).
+
+# Boxplot: Zip code vs Highest Price
+```{r}
+#NEU
+gNEU2 <- ggplot(data = neu_housing, mapping = aes(x=zipcode, y=max_price)) +
+  geom_boxplot() +
+  coord_flip()
+gNEU2
+
+```
+Disregarding the outliers(the dots on the graph), it can be noted that the area with zipcode 02210(Boston) has the largest range of maximum price of apartments.
+
+# Boxplot: Zip code vs Average Price
+```{r}
+#NEU
+gNEU3 <- ggplot(data = neu_housing, mapping = aes(x=zipcode, y=avg_price)) +
+  geom_boxplot() +
+  coord_flip()
+gNEU3
+
+```
+Disregarding the outliers(the dots on the graph), it can be noted that the area with zipcode 02446(Brookline) has the largest range of average price of apartments.
+
+# Scatterplot: relationship between avg price vs city
+```{r}
+#NEU
+gNEU4a <- ggplot(data = neu_housing, mapping = aes(x=city, y=avg_price)) +
+  geom_jitter() +
+  coord_flip()
+gNEU4a
+```
+
+# Boxplot: relationship between avg price vs city
+```{r}
+#NEU
+gNEU4b <- ggplot(data = neu_housing, mapping = aes(x=city, y=avg_price)) +
+  geom_boxplot() +
+  coord_flip()
+gNEU4b
+```
+Looking at graph 4a and 4b, disregarding the outliers(the dots on the graphs), it can be concluded that Boston has the largest range of average prices of apartments out of all cities, with apartments of prices concentrated near the $1250-$5000 range; then followed by Cambridge, which has the second largest range of average prices of apartments. The fact that Allston apartments have the largest interquartile range is also interesting to note.
+The fact outliers exist mainly in Boston, Cambridge and Brookline suggests that there might be more luxurious housing choices in these cities.
+
+# Pie Chart: Number of apartments in zip code 
+# This shows us that the most number of apartments in the NEU area are in the 02446 zip code
+# The least number of apartments in the NEU area are in the 02203/02201/02145/02128/02124
+```{r}
+#NEU
+
+count_zip <-  group_by(neu_housing, zipcode) %>%  
+  select(zipcode) %>%
+  summarise(Count = n()) %>% as.data.frame()
+
+count_zip$zipcode <- as.character(count_zip$zipcode)
+
+ggplot(data=count_zip, aes(x=count_zip$zipcode, y=count_zip$Count)) +
+  geom_bar(stat="identity") + coord_flip()
+
+
+```
+
+
+# Scatterplot: Rating vs Price
+# We cannot draw any conclusion from this plot, due to lack of data (ratings). Hence, innacurate
+```{r}
+#NEU
+plot( neu_housing$neu_rating, neu_housing$avg_price, main="Rating vs Price NEU", 
+   xlab="Rating", ylab="Average Price")
+
+```
+
+# Pie Chart: Number of apts in each city
+# Most apartments in NEU area are in the Boston city.
+# The least are in the Brighton city area.
+```{r}
+#NEU
+city_avgrating <-  group_by(neu_housing, city) %>%  
+  select(city) %>%
+  summarise(count = n()) %>% as.data.frame()
+
+ggplot(data=city_avgrating, aes(x=city_avgrating$city, y=city_avgrating$count)) +
+  geom_bar(stat="identity") +
+  coord_flip()
+
+
+```
+
+# Regression training and testing datasets
+```{r}
+## 70% of the sample size
+smp_size <- floor(0.70 * nrow(neu_housing))
+
+## set the seed to make your partition reproducible
+set.seed(123)
+train_ind <- sample(seq_len(nrow(neu_housing)), size = smp_size)
+
+train <- neu_housing[train_ind, ]
+test <- neu_housing[-train_ind, ]
+```
+
+# Linear Regression Model to Predict Price
+# Relationship between average price and city + apartment style + zipcode
+```{r}
+linear_model <- lm(avg_price ~ city + neu_apartment_style + zipcode, data = train)
+summary(linear_model)
+```
+A lot of the variables are statistically insignificant as they all have p-value larger than 0.05, this might be due to the lack of data in our dataset. Afterall, there are only 750 rows in our data and so many zipcodes these row can refer to. However, it is the best we can do since there are only 750 instances/rental apartments on the web Apartment Finder.
+Therefore, we cannot conclude that a significant difference exists for those variables.
+However, there are variables that are statistically significant, but due to the partial statical significance in our dataset. It is hard for us to make an impartial conclusion looking at the data and statistics.
+This might have been caused by external factors we are not aware of. And as we were not able to webscrape amenities, that might have played a huge role in affecting prices of apartments as well.
+Therefore, it cannot be concluded that there exists a relationship between average prices and (city + apartment style + zipcode).
+

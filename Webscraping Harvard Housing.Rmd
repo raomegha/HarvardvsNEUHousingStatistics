@@ -1,0 +1,261 @@
+---
+title: "Webscraping Harvard Housing"
+author: "Hiu Ching Law, Megha Rao"
+date: "March 15, 2019"
+output: pdf_document
+---
+
+# Import Libraries
+```{r, include=TRUE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# gather all library inclusion here
+library(rvest)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+```
+
+# Helper function(s)
+```{r}
+sumfun<-function(x,start,end){
+  return(sum(x[start:end]))
+}
+```
+
+# Reading the page
+```{r}
+harvard_page <- paste0('https://www.apartmentfinder.com/Off-Campus-Housing/Massachusetts/Apartments-Near-Harvard-University-l146f7d/Page', 1:30)
+
+
+# initializing a list for all the Harvard variables to be put into the dataframe neu_housing
+harvard_name <- vector("list", 30)
+harvard_apartment_style <- vector("list", 30)
+harvard_price <- vector("list", 30)
+harvard_address <- vector("list", 30)
+harvard_contact_phone <- vector("list", 30)
+harvard_rating <- vector("list", 30)
+
+# Webscraping Harvard data
+for(i in seq_along(harvard_page)){
+  
+  harvard_name[[i]] <- read_html(harvard_page[i]) %>% html_nodes(".listingTitle span") %>% html_text()
+  harvard_apartment_style[[i]] <- read_html(harvard_page[i]) %>% html_nodes('.unitLabel') %>% html_text()
+  harvard_price[[i]] <- read_html(harvard_page[i]) %>% html_nodes('.altRentDisplay') %>% html_text()
+  harvard_address[[i]] <- read_html(harvard_page[i]) %>% html_nodes('.location span') %>% html_text()
+  harvard_contact_phone[[i]] <- read_html(harvard_page[i]) %>% html_nodes('.phone') %>% html_text
+  #harvard_amenities <- harvard_page %>% html_nodes('ul.amenities.row') %>% html_attrs()
+  harvard_rating[[i]] <- read_html(harvard_page[i]) %>% html_nodes('li.iconStar') %>% html_attrs() %>% map(str_match, 'notFilled$') %>% unlist()
+  
+  # cleaning apartment style data
+  harvard_apartment_style[[i]] <- harvard_apartment_style[[i]] %>%
+    str_replace_all("^\\s+|\\s+$", "") %>%
+    str_replace_all("\r\n", "")
+
+  # cleaning the price data
+  harvard_price[[i]] <- harvard_price[[i]] %>%
+    str_replace_all("^\\s+|\\s+$", "") %>%
+    str_replace_all("^\\s+|\\s+$", "")
+}
+
+  # getting the entire address, and cleaning
+  # remove "MA " from column state for Harvard address
+  harvard_address <- harvard_address %>% unlist()
+  seq_needed <- seq(from = 1, to = length(harvard_address), by = 5)
+  harvard_address <- harvard_address[seq_needed] %>%
+    str_replace_all("\r\n                        ", "") %>%
+    str_replace_all("\r\n                    ", "") %>%
+    str_replace_all("MA", "")
+
+  # retrieving and cleaning rating data - Harvard
+  harvard_rating <- harvard_rating %>% unlist()
+  harvard_rating <- as.vector(harvard_rating <- sapply(harvard_rating, str_count, "notFilled"))
+  harvard_rating[is.na(harvard_rating)] <- 0
+  harvard_apartment_style[is.na(harvard_apartment_style)] <- ""
+  
+  k <- 1
+  l <- 5
+  temp <- vector("list", 30)
+  for (j in seq(from=1, to=750, by=1)) {
+    temp[j] <- sumfun(harvard_rating, k, l)
+    k <- k + 5
+    l <- l + 5
+  }
+  
+  # unlisting columns to be placed into dataframe
+  harvard_rating <- temp %>% unlist()
+  harvard_name <- harvard_name %>% unlist()
+  harvard_apartment_style <- harvard_apartment_style %>% unlist()
+  harvard_price <- as.vector(harvard_price %>% unlist())
+  harvard_contact_phone <- harvard_contact_phone %>% unlist()
+  
+  # creating a dataframe for harvard_housing table
+  harvard_housing <- data.frame(
+    harvard_name,
+    harvard_apartment_style,
+    harvard_price,
+    harvard_address,
+    #harvard_contact_phone, # we got rid of this because we felt like this column isn't really significant to what we want to analyse
+    #harvard_amenities, # we are still trying to webscrape this piece of data, but pictures are really hard to webscrape
+    harvard_rating,
+    stringsAsFactors=FALSE
+  )
+  
+###
+### after creating the dataframe
+###
+
+# separating the entire address into 3 columns
+harvard_housing <- harvard_housing %>% separate(harvard_address, into = c("street_address", "city", "zipcode"), sep = ",")
+
+# separating the price into min and max
+harvard_housing <- harvard_housing %>% separate(harvard_price, into = c("min_price", "max_price"), sep = " - ")
+
+# replace "Call for Rent" with NA
+harvard_housing <- harvard_housing %>% mutate(min_price = "is.na<-"(min_price, min_price == 'Call for Rent'))
+
+# replace ratings of 0 with NA
+harvard_housing[harvard_housing == 0 ] <- NA
+harvard_housing[harvard_housing == "" ] <- NA
+
+# remove $ sign and turn min_price and max_price to numerics
+harvard_housing$min_price <- substring(harvard_housing$min_price, 2)
+harvard_housing$max_price <- substring(harvard_housing$max_price, 2)
+harvard_housing$min_price <- (na_if(harvard_housing$min_price, "all for Rent   "))
+harvard_housing$min_price <- as.numeric(gsub(",", "", harvard_housing$min_price))
+harvard_housing$max_price <- as.numeric(gsub(",", "", harvard_housing$max_price))
+
+# adding avg_price
+harvard_housing$avg_price <- (harvard_housing$min_price + harvard_housing$max_price) / 2
+
+# if there is no max_price but min_price, copy over min_price to avg_price
+harvard_housing$max_price <- ifelse(is.na(harvard_housing$max_price), harvard_housing$min_price, harvard_housing$max_price)
+harvard_housing$avg_price <- ifelse(is.na(harvard_housing$avg_price), harvard_housing$min_price, harvard_housing$avg_price)
+
+# adding avg_price after modifying max_price
+harvard_housing$avg_price <- (harvard_housing$min_price + harvard_housing$max_price) / 2
+
+harvard_housing
+
+# END HARVARD webscraping
+```
+
+
+
+# Creating Plots
+
+# Boxplot: Zip code vs Lowest Price
+```{r}
+
+#Harvard
+gHarvard1 <- ggplot(data = harvard_housing, mapping = aes(x=zipcode, y=min_price)) +
+  geom_boxplot() +
+  coord_flip()
+gHarvard1
+
+```
+Disregarding the outliers(the dots on the graph), it can be concluded that the area with zipcode 02446(Brookline) has the largest range of minimum price of apartments, followed by areas with zipcode 02134(Brighton), 02155(Medford), 02115(Boston).
+
+# Boxplot: Zip code vs Highest Price
+```{r}
+
+#Harvard
+gHarvard2 <- ggplot(data = harvard_housing, mapping = aes(x=zipcode, y=max_price)) +
+  geom_boxplot() +
+  coord_flip()
+gHarvard2
+
+```
+Disregarding the outliers(the dots on the graph), it can be noted that all the areas have apartments of maximum price that are of approximately the same range. It is in fact rather even, with a few exceptions, namely 02108(Boston) and 02118(Boston), 02130(Boston). However, the existence of these exceptions might have been caused by the lack of housing data in those areas.
+
+# Boxplot: Zip code vs Average Price
+```{r}
+
+#Harvard
+gHarvard3 <- ggplot(data = harvard_housing, mapping = aes(x=zipcode, y=avg_price)) +
+  geom_boxplot() +
+  coord_flip()
+gHarvard3
+
+```
+Disregarding the outliers(the dots on the graph), it can be concluded that the area with zipcode 02215(Boston) has the largest range of average price of apartments, followed by areas with zipcode 02446(Brookline), 02134(Brighton), 02116(Boston). Again, exceptions include 02108(Boston), 02130(Boston) and 02118(Boston) which have a very small range. However, this might be again caused by the lack of housing data in those areas.
+
+# Scatterplot: relationship between avg price vs city
+```{r}
+
+#Harvard
+gHarvard4a <- ggplot(data = harvard_housing, mapping = aes(x=city, y=avg_price)) +
+  geom_jitter() +
+  coord_flip()
+gHarvard4a
+```
+
+# Boxplot: relationship between avg price vs city
+```{r}
+
+#Harvard
+gHarvard4b <- ggplot(data = harvard_housing, mapping = aes(x=city, y=avg_price)) +
+  geom_boxplot() +
+  coord_flip()
+gHarvard4b
+```
+Looking at graph 4a and 4b, disregarding the outliers(the dots on the graphs), it can be concluded that Boston has the largest range of average prices of apartments out of all cities, with apartments of prices concentrated near the $1250-$5000 range; then followed by Brookline, which has the second largest range of average prices of apartments; then by Cambridge and Medford. The fact that Allston apartments have the largest interquartile range is also interesting to note.
+The fact outliers exist mainly in Boston, Cambridge and Brookline suggests that there might be more luxurious housing choices in these cities.
+
+# Bar Chart: Number of apartments in zip code 
+# Most number of aparments in the Boston area 02135 - The exact opposite of NEU! 
+# Least number of apartments in the zip code is 02130/02118 and 02108
+```{r}
+
+#Harvard
+count_zip <-  group_by(harvard_housing, zipcode) %>%  
+  select(zipcode) %>%
+  summarise(Count = n()) %>% as.data.frame()
+
+count_zip$zipcode <- as.character(count_zip$zipcode)
+
+ggplot(data=count_zip, aes(x=count_zip$zipcode, y=count_zip$Count)) +
+  geom_bar(stat="identity") + coord_flip()
+```
+
+# Scatterplot: Rating vs Price
+# This data is inaccurate because a lot of the rating data is missing
+```{r}
+#Harvard
+plot( harvard_housing$harvard_rating, harvard_housing$avg_price, main="Rating vs Price harvard", 
+   xlab="Rating", ylab="Average Price")
+
+```
+
+
+# Bar Chart: Number of apts in each city
+# Most apartments in the city of Boston. The least in Brigton Center?
+
+```{r}
+#Harvard
+city_avgrating <-  group_by(harvard_housing, city) %>%  
+  select(city) %>%
+  summarise(count = n()) %>% as.data.frame()
+
+ggplot(data=city_avgrating, aes(x=city_avgrating$city, y=city_avgrating$count)) +
+  geom_bar(stat="identity") + coord_flip()
+
+```
+
+# Regression training and testing datasets
+```{r}
+## 70% of the sample size
+smp_size <- floor(0.70 * nrow(harvard_housing))
+
+## set the seed to make your partition reproducible
+set.seed(123)
+train_ind2 <- sample(seq_len(nrow(harvard_housing)), size = smp_size)
+
+train2 <- harvard_housing[train_ind2, ]
+test2 <- harvard_housing[-train_ind2, ]
+```
+
+# Linear Regression Model to Predict Price
+# Relationship between average price and city + apartment style + zipcode
+```{r}
+linear_model <- lm(avg_price ~ city + harvard_apartment_style + zipcode, data = train2)
+summary(linear_model)
